@@ -1,0 +1,684 @@
+請生成一個靜態網頁，將所有程式碼都寫在單一一個 .html 檔中，這個網站的功能是
+
+利用滑鼠控制視角、鍵盤（WASD）前後左右移動。玩家在一個封閉的 3D 空間（如地下道、廢棄醫院、洋房）裡尋找線索、解開機關或躲避怪物。 
+
+
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>廢棄醫院脫出 - 雷達潛行版</title>
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background-color: #050505;
+            font-family: 'Courier New', Courier, monospace;
+            user-select: none;
+        }
+
+        #canvas-container {
+            width: 100%;
+            height: 100%;
+        }
+
+        #ui-layer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            box-sizing: border-box;
+            padding: 20px;
+        }
+
+        #crosshair {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            width: 10px;
+            height: 10px;
+            transform: translate(-50%, -50%);
+            border: 2px solid rgba(255, 255, 255, 0.4);
+            border-radius: 50%;
+        }
+
+        .hud-top {
+            display: flex;
+            justify-content: space-between;
+            color: #ff3333;
+            font-size: 20px;
+            font-weight: bold;
+            text-shadow: 0 0 5px #000;
+        }
+
+        #stealth-status {
+            position: absolute;
+            bottom: 5%;
+            left: 5%;
+            color: #00ff00;
+            font-size: 18px;
+            font-weight: bold;
+            text-shadow: 0 0 5px #000;
+        }
+
+        /* 右下角心率雷達地圖 */
+        #minimap {
+            position: absolute;
+            bottom: 20px;
+            right: 20px;
+            background: rgba(0, 10, 0, 0.65);
+            border: 2px solid #00ff00;
+            box-shadow: 0 0 15px rgba(0, 255, 0, 0.2);
+            border-radius: 4px;
+        }
+
+        #interaction-prompt {
+            position: absolute;
+            bottom: 30%;
+            width: 100%;
+            text-align: center;
+            color: #fff;
+            font-size: 24px;
+            font-weight: bold;
+            text-shadow: 0 0 8px #ff0000;
+            display: none;
+        }
+
+        .overlay-screen {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.9);
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            color: #fff;
+            text-align: center;
+            z-index: 10;
+            cursor: pointer;
+        }
+
+        .overlay-screen h1 {
+            font-size: 42px;
+            color: #ff3333;
+            margin-bottom: 20px;
+            letter-spacing: 5px;
+            text-shadow: 0 0 10px #ff0000;
+        }
+
+        .overlay-screen p {
+            font-size: 16px;
+            line-height: 1.6;
+            color: #ccc;
+            margin-bottom: 30px;
+        }
+
+        .btn {
+            padding: 12px 30px;
+            background: #222;
+            border: 2px solid #ff3333;
+            color: #ff3333;
+            font-size: 20px;
+            font-weight: bold;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+
+        .btn:hover {
+            background: #ff3333;
+            color: #000;
+            box-shadow: 0 0 15px #ff3333;
+        }
+
+        #game-over-screen, #win-screen {
+            display: none;
+        }
+        
+        #game-over-screen h1 { text-shadow: 0 0 20px #ff0000; color: #ff0000; }
+        #win-screen h1 { text-shadow: 0 0 20px #00ff00; color: #00ff00; border-color: #00ff00; }
+    </style>
+    
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+</head>
+<body>
+
+    <div id="canvas-container"></div>
+
+    <div id="ui-layer">
+        <div class="hud-top">
+            <div id="objective">尋找 3 把黃金鑰匙以解鎖安全大門</div>
+            <div id="clues-counter">鑰匙: 0 / 3</div>
+        </div>
+        <div id="crosshair"></div>
+        <div id="stealth-status">狀態：站立（移動會發出聲音）</div>
+        <div id="interaction-prompt">按 [ E ] 拾取鑰匙</div>
+    </div>
+
+    <canvas id="minimap" width="168" height="168"></canvas>
+
+    <div id="start-screen" class="overlay-screen">
+        <h1>廢棄醫院：雷達潛行</h1>
+        <p>
+            醫院深處有一隻盲眼獵殺者...牠看不見，但能聽見任何腳步聲！<br>
+            幸運的是，你手上的生命探測儀成功捕捉到了牠的訊號。<br><br>
+            <b>【生存法則】</b><br>
+            1. 觀察右下角雷達：<b>🟢 綠點是你，🔴 紅點是鬼</b>。<br>
+            2. 鬼的移動速度比你慢，但如果你大搖大擺走路，牠會循聲發狂衝過來！<br>
+            3. <b>【關鍵】必須全程長按 Shift 鍵來「蹲下潛行」</b>，此狀態下雷達安全，移動完全無聲。<br><br>
+            <b>【操作說明】</b><br>
+            點擊此畫面：進入遊戲<br>
+            滑鼠 或 方向鍵(←→↑↓)：控制視角<br>
+            鍵盤 <b>W, A, S, D</b>：前後左右移動<br>
+            鍵盤 <b>長按 Shift</b>：鎖定蹲下 / 無聲潛行（放開會站起來）<br>
+            鍵盤 <b>E</b>：拾取鑰匙 / 開門逃脫
+        </p>
+        <div class="btn">啟動雷達進入</div>
+    </div>
+
+    <div id="game-over-screen" class="overlay-screen">
+        <h1>你被抓到了...</h1>
+        <p>雷達訊號終止。你在黑暗中被盲屍徹底撕碎。</p>
+        <div class="btn" onclick="window.location.reload()">重新挑戰</div>
+    </div>
+
+    <div id="win-screen" class="overlay-screen">
+        <h1>成功逃脫！</h1>
+        <p>看著雷達上被你耍得團團轉的紅點，你輕鬆用鑰匙開門回到了安全世界！</p>
+        <div class="btn" onclick="window.location.reload()">再次挑戰</div>
+    </div>
+
+    <script>
+        if (typeof THREE === 'undefined') {
+            alert("❌ 錯誤：無法載入 3D 遊戲引擎！請檢查網路。");
+        }
+
+        // --- 遊戲變數 ---
+        let scene, camera, renderer;
+        let moveForward = false, moveBackward = false, moveLeft = false, moveRight = false;
+        let turnLeft = false, turnRight = false, lookUp = false, lookDown = false;
+        let isSneaking = false; 
+        let prevTime = performance.now();
+        
+        let flashlight, ambientLight;
+        let walls = [];
+        let clues = []; 
+        let monster;
+        let monsterTargetPos = new THREE.Vector3(); 
+        let escapeDoor = null;
+        
+        let minimapCanvas, minimapCtx;
+        
+        let pitch = 0, yaw = 0;   
+        let isGameRunning = false;
+        let isMouseLocked = false;
+
+        let gameState = {
+            cluesFound: 0,
+            totalClues: 3,
+            isGameOver: false,
+            hasEscaped: false
+        };
+
+        const MAP_SIZE = 14;
+        const GRID_UNIT = 6; 
+        const mapGrid = [
+            [1,1,1,1,1,1,1,1,1,1,1,1,1,1],
+            [1,0,0,0,1,0,0,0,0,1,0,0,0,1],
+            [1,0,1,0,1,0,1,1,0,1,0,1,0,1],
+            [1,0,1,0,0,0,0,1,0,0,0,1,0,1],
+            [1,0,1,1,1,1,0,1,1,1,1,1,0,1],
+            [1,0,0,0,0,1,0,0,0,0,0,1,0,1],
+            [1,1,1,0,0,1,1,1,1,0,0,1,0,1],
+            [1,0,0,0,0,0,0,1,1,0,0,0,0,1], 
+            [1,0,1,1,1,1,1,0,1,1,1,1,0,1],
+            [1,0,1,0,0,0,1,0,0,0,0,1,0,1],
+            [1,0,1,0,1,0,1,1,1,1,0,1,0,1],
+            [1,0,0,0,1,0,0,0,0,1,0,0,0,1],
+            [1,0,1,0,1,1,1,0,1,1,1,1,0,1],
+            [1,1,1,1,1,1,1,1,1,1,1,1,1,1] 
+        ];
+
+        const raycaster = new THREE.Raycaster();
+        const mouseCenter = new THREE.Vector2(0, 0); 
+        let closestInteractiveObj = null;
+
+        init();
+        animate();
+
+        function init() {
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x020202);
+            scene.fog = new THREE.FogExp2(0x020202, 0.13); 
+
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.set(GRID_UNIT * 1.5, 2, GRID_UNIT * 1.5); 
+            camera.rotation.order = 'YXZ'; 
+
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.shadowMap.enabled = true;
+            document.getElementById('canvas-container').appendChild(renderer.domElement);
+
+            // 初始化雷達畫布
+            minimapCanvas = document.getElementById('minimap');
+            minimapCtx = minimapCanvas.getContext('2d');
+
+            const startScreen = document.getElementById('start-screen');
+            startScreen.addEventListener('click', () => {
+                startScreen.style.display = 'none';
+                isGameRunning = true;
+                try {
+                    document.body.requestPointerLock = document.body.requestPointerLock || document.body.mozRequestPointerLock;
+                    if (document.body.requestPointerLock) document.body.requestPointerLock();
+                } catch(e) {}
+            });
+
+            document.addEventListener('pointerlockchange', () => {
+                if (document.pointerLockElement === document.body) {
+                    isMouseLocked = true;
+                } else {
+                    isMouseLocked = false;
+                    if (!gameState.isGameOver && !gameState.hasEscaped) {
+                        startScreen.style.display = 'flex';
+                        isGameRunning = false;
+                    }
+                }
+            });
+
+            document.addEventListener('mousemove', (e) => {
+                if (!isGameRunning || !isMouseLocked) return;
+                yaw -= e.movementX * 0.0025;
+                pitch -= e.movementY * 0.0025;
+                pitch = Math.max(-Math.PI / 2.2, Math.min(Math.PI / 2.2, pitch));
+                camera.rotation.set(pitch, yaw, 0);
+            });
+
+            const onKeyDown = (event) => {
+                if (!isGameRunning) return;
+                switch (event.code) {
+                    case 'KeyW': moveForward = true; break;
+                    case 'KeyA': moveLeft = true; break;
+                    case 'KeyS': moveBackward = true; break;
+                    case 'KeyD': moveRight = true; break;
+                    case 'ArrowLeft': turnLeft = true; break;
+                    case 'ArrowRight': turnRight = true; break;
+                    case 'ArrowUp': lookUp = true; break;
+                    case 'ArrowDown': lookDown = true; break;
+                    case 'ShiftLeft': case 'ShiftRight': 
+                        isSneaking = true; 
+                        document.getElementById('stealth-status').innerText = "狀態：蹲下潛行（靜音中）";
+                        document.getElementById('stealth-status').style.color = "#00ff00";
+                        break;
+                    case 'KeyE': interact(); break;
+                }
+            };
+
+            const onKeyUp = (event) => {
+                switch (event.code) {
+                    case 'KeyW': moveForward = false; break;
+                    case 'KeyA': moveLeft = false; break;
+                    case 'KeyS': moveBackward = false; break;
+                    case 'KeyD': moveRight = false; break;
+                    case 'ArrowLeft': turnLeft = false; break;
+                    case 'ArrowRight': turnRight = false; break;
+                    case 'ArrowUp': lookUp = false; break;
+                    case 'ArrowDown': lookDown = false; break;
+                    case 'ShiftLeft': case 'ShiftRight': 
+                        isSneaking = false; 
+                        document.getElementById('stealth-status').innerText = "狀態：站立（移動會發出聲音！）";
+                        document.getElementById('stealth-status').style.color = "#ff3333";
+                        break;
+                }
+            };
+
+            document.addEventListener('keydown', onKeyDown);
+            document.addEventListener('keyup', onKeyUp);
+
+            ambientLight = new THREE.AmbientLight(0x050510); 
+            scene.add(ambientLight);
+
+            flashlight = new THREE.SpotLight(0xfff5df, 4, 22, Math.PI / 5, 0.6, 1);
+            flashlight.castShadow = true;
+            camera.add(flashlight);
+            flashlight.position.set(0, 0, 0);
+            
+            const targetObject = new THREE.Object3D();
+            targetObject.position.set(0, 0, -1);
+            camera.add(targetObject);
+            flashlight.target = targetObject;
+            scene.add(camera);
+
+            buildHospital();
+            window.addEventListener('resize', onWindowResize);
+        }
+
+        function buildHospital() {
+            const floorGeo = new THREE.PlaneGeometry(MAP_SIZE * GRID_UNIT, MAP_SIZE * GRID_UNIT);
+            const floorMat = new THREE.MeshStandardMaterial({ color: 0x151c15, roughness: 0.8 });
+            const floor = new THREE.Mesh(floorGeo, floorMat);
+            floor.rotation.x = -Math.PI / 2;
+            floor.position.set((MAP_SIZE * GRID_UNIT)/2 - GRID_UNIT/2, 0, (MAP_SIZE * GRID_UNIT)/2 - GRID_UNIT/2);
+            scene.add(floor);
+
+            const ceilingMat = new THREE.MeshStandardMaterial({ color: 0x0d0d0d, roughness: 0.9 });
+            const ceiling = new THREE.Mesh(floorGeo, ceilingMat);
+            ceiling.rotation.x = Math.PI / 2;
+            ceiling.position.set((MAP_SIZE * GRID_UNIT)/2 - GRID_UNIT/2, 4.5, (MAP_SIZE * GRID_UNIT)/2 - GRID_UNIT/2);
+            scene.add(ceiling);
+
+            const wallGeo = new THREE.BoxGeometry(GRID_UNIT, 4.5, GRID_UNIT);
+            const wallMat = new THREE.MeshStandardMaterial({ color: 0x223026, roughness: 0.7 });
+
+            // 生成 3 把黃金鑰匙
+            createKey(1 * GRID_UNIT, 11 * GRID_UNIT, 1);
+            createKey(11 * GRID_UNIT, 1 * GRID_UNIT, 2);
+            createKey(12 * GRID_UNIT, 11 * GRID_UNIT, 3);
+
+            createMonster(7 * GRID_UNIT, 7 * GRID_UNIT);
+            createEscapeDoor(7 * GRID_UNIT, 13 * GRID_UNIT);
+
+            for (let z = 0; z < MAP_SIZE; z++) {
+                for (let x = 0; x < MAP_SIZE; x++) {
+                    if (mapGrid[z][x] === 1) {
+                        const wall = new THREE.Mesh(wallGeo, wallMat);
+                        wall.position.set(x * GRID_UNIT, 2.25, z * GRID_UNIT);
+                        wall.castShadow = true;
+                        scene.add(wall);
+                        walls.push(wall); 
+                    }
+                }
+            }
+        }
+
+        function createKey(x, z, id) {
+            const group = new THREE.Group();
+            const ringGeo = new THREE.TorusGeometry(0.15, 0.05, 4, 8);
+            const ringMat = new THREE.MeshStandardMaterial({ color: 0xffd700, metalness: 0.8 });
+            const ring = new THREE.Mesh(ringGeo, ringMat);
+            ring.position.y = 0.3;
+            group.add(ring);
+
+            const shaftGeo = new THREE.CylinderGeometry(0.03, 0.03, 0.4);
+            const shaft = new THREE.Mesh(shaftGeo, ringMat);
+            shaft.position.y = 0.1;
+            shaft.rotation.z = Math.PI / 2;
+            group.add(shaft);
+
+            const light = new THREE.PointLight(0xffaa00, 0.6, 3);
+            light.position.y = 0.5;
+            group.add(light);
+
+            group.position.set(x, 0.2, z);
+            group.userData = { isKey: true, id: id };
+            scene.add(group);
+            clues.push(group);
+        }
+
+        function createMonster(x, z) {
+            monster = new THREE.Group();
+            const bodyGeo = new THREE.CylinderGeometry(0.4, 0.2, 3.5, 8);
+            const bodyMat = new THREE.MeshBasicMaterial({ color: 0x050505 });
+            const body = new THREE.Mesh(bodyGeo, bodyMat);
+            body.position.y = 1.75;
+            monster.add(body);
+
+            const eyeGeo = new THREE.SphereGeometry(0.08, 8, 8);
+            const eyeMat = new THREE.MeshBasicMaterial({ color: 0xeeeeee });
+            const leftEye = new THREE.Mesh(eyeGeo, eyeMat); leftEye.position.set(0.15, 3.2, -0.35);
+            const rightEye = new THREE.Mesh(eyeGeo, eyeMat); rightEye.position.set(-0.15, 3.2, -0.35);
+            monster.add(leftEye, rightEye);
+
+            const monsterLight = new THREE.PointLight(0x330000, 2, 5);
+            monsterLight.position.y = 2;
+            monster.add(monsterLight);
+
+            monster.position.set(x, 0, z);
+            monsterTargetPos.copy(monster.position); 
+            scene.add(monster);
+        }
+
+        function createEscapeDoor(x, z) {
+            escapeDoor = new THREE.Group();
+            const doorGeo = new THREE.BoxGeometry(3, 4, 0.3);
+            const doorMat = new THREE.MeshStandardMaterial({ color: 0x1c1c1c, roughness: 0.6 });
+            const doorMesh = new THREE.Mesh(doorGeo, doorMat);
+            doorMesh.position.y = 2;
+            escapeDoor.add(doorMesh);
+
+            const lightGeo = new THREE.BoxGeometry(1, 0.3, 0.4);
+            const lightMat = new THREE.MeshBasicMaterial({ color: 0x00ff00 });
+            const lightMesh = new THREE.Mesh(lightGeo, lightMat);
+            lightMesh.position.set(0, 3.8, -0.2);
+            escapeDoor.add(lightMesh);
+
+            const exitLight = new THREE.PointLight(0x00ff00, 0, 8); 
+            exitLight.position.set(0, 3.5, -1);
+            escapeDoor.add(exitLight);
+            escapeDoor.userData = { light: exitLight };
+
+            escapeDoor.position.set(x, 0, z);
+            scene.add(escapeDoor);
+        }
+
+        function checkInteractions() {
+            if (gameState.isGameOver || gameState.hasEscaped) return;
+
+            raycaster.setFromCamera(mouseCenter, camera);
+            const intersects = raycaster.intersectObjects(clues, true);
+            const prompt = document.getElementById('interaction-prompt');
+
+            if (intersects.length > 0 && intersects[0].distance < 4) {
+                let obj = intersects[0].object;
+                while (obj.parent && !obj.userData.isKey) {
+                    obj = obj.parent;
+                }
+                closestInteractiveObj = obj;
+                prompt.style.display = 'block';
+                prompt.innerText = "按 [ E ] 拾取古老鑰匙";
+            } else {
+                const doorDist = camera.position.distanceTo(escapeDoor.position);
+                if (doorDist < 4) {
+                    prompt.style.display = 'block';
+                    if (gameState.cluesFound >= gameState.totalClues) {
+                        prompt.innerText = "按 [ E ] 用鑰匙開門逃離醫院！";
+                        closestInteractiveObj = escapeDoor;
+                    } else {
+                        prompt.innerText = `大門深鎖。還差 ${gameState.totalClues - gameState.cluesFound} 把鑰匙。`;
+                        closestInteractiveObj = null;
+                    }
+                } else {
+                    closestInteractiveObj = null;
+                    prompt.style.display = 'none';
+                }
+            }
+        }
+
+        function interact() {
+            if (!closestInteractiveObj) return;
+
+            if (closestInteractiveObj.userData.isKey) {
+                scene.remove(closestInteractiveObj);
+                clues = clues.filter(c => c !== closestInteractiveObj);
+                gameState.cluesFound++;
+                document.getElementById('clues-counter').innerText = `鑰匙: ${gameState.cluesFound} / ${gameState.totalClues}`;
+                
+                if (gameState.cluesFound === gameState.totalClues) {
+                    document.getElementById('objective').innerText = "已集齊所有鑰匙！快去安全大門開門！";
+                    document.getElementById('objective').style.color = "#00ff00";
+                    escapeDoor.userData.light.intensity = 3;
+                }
+                closestInteractiveObj = null;
+            } 
+            else if (closestInteractiveObj === escapeDoor && gameState.cluesFound >= gameState.totalClues) {
+                gameState.hasEscaped = true;
+                isGameRunning = false;
+                document.exitPointerLock();
+                document.getElementById('win-screen').style.display = 'flex';
+            }
+        }
+
+        function checkCollision(nextPos) {
+            const gridX = Math.round(nextPos.x / GRID_UNIT);
+            const gridZ = Math.round(nextPos.z / GRID_UNIT);
+            if (gridX >= 0 && gridX < MAP_SIZE && gridZ >= 0 && gridZ < MAP_SIZE) {
+                if (mapGrid[gridZ][gridX] === 1) return true;
+            }
+            return false;
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        // --- 繪製雷達小地圖核心邏輯 ---
+        function updateMinimap() {
+            if (!minimapCtx) return;
+            
+            // 清空畫布
+            minimapCtx.clearRect(0, 0, minimapCanvas.width, minimapCanvas.height);
+            
+            const cellSize = minimapCanvas.width / MAP_SIZE; // 每格像素大小 (12px)
+            
+            // 1. 繪製牆壁
+            minimapCtx.fillStyle = "rgba(40, 60, 45, 0.8)";
+            for (let z = 0; z < MAP_SIZE; z++) {
+                for (let x = 0; x < MAP_SIZE; x++) {
+                    if (mapGrid[z][x] === 1) {
+                        minimapCtx.fillRect(x * cellSize, z * cellSize, cellSize - 1, cellSize - 1);
+                    }
+                }
+            }
+            
+            // 2. 繪製玩家位置（綠色點點 🟢）
+            const playerGridX = camera.position.x / GRID_UNIT;
+            const playerGridZ = camera.position.z / GRID_UNIT;
+            minimapCtx.beginPath();
+            minimapCtx.arc(playerGridX * cellSize, playerGridZ * cellSize, 4, 0, Math.PI * 2);
+            minimapCtx.fillStyle = "#00ff00";
+            minimapCtx.fill();
+            
+            // 3. 繪製鬼的位置（紅色點點 🔴）
+            if (monster) {
+                const monsterGridX = monster.position.x / GRID_UNIT;
+                const monsterGridZ = monster.position.z / GRID_UNIT;
+                minimapCtx.beginPath();
+                minimapCtx.arc(monsterGridX * cellSize, monsterGridZ * cellSize, 4, 0, Math.PI * 2);
+                minimapCtx.fillStyle = "#ff0000";
+                minimapCtx.fill();
+            }
+        }
+
+        // --- 遊戲主迴圈 ---
+        function animate() {
+            requestAnimationFrame(animate);
+
+            if (!isGameRunning || gameState.isGameOver || gameState.hasEscaped) {
+                prevTime = performance.now();
+                return;
+            }
+
+            const time = performance.now();
+            const delta = (time - prevTime) / 1000;
+
+            // 1. 鍵盤旋轉視角
+            const rotateSpeed = 1.8;
+            if (turnLeft) yaw += rotateSpeed * delta;
+            if (turnRight) yaw -= rotateSpeed * delta;
+            if (lookUp) pitch += rotateSpeed * delta;
+            if (lookDown) pitch -= rotateSpeed * delta;
+            pitch = Math.max(-Math.PI / 2.2, Math.min(Math.PI / 2.2, pitch));
+            camera.rotation.set(pitch, yaw, 0);
+
+            // 2. 潛行高度平滑切換
+            const targetHeight = isSneaking ? 1.25 : 2.0;
+            camera.position.y += (targetHeight - camera.position.y) * 8.0 * delta;
+
+            // 3. 玩家移動計算
+            let moveVec = new THREE.Vector3();
+            let forwardX = -Math.sin(yaw);
+            let forwardZ = -Math.cos(yaw);
+            let rightX = Math.cos(yaw);
+            let rightZ = -Math.sin(yaw);
+
+            if (moveForward) { moveVec.x += forwardX; moveVec.z += forwardZ; }
+            if (moveBackward) { moveVec.x -= forwardX; moveVec.z -= forwardZ; }
+            if (moveRight) { moveVec.x += rightX; moveVec.z += rightZ; }
+            if (moveLeft) { moveVec.x -= rightX; moveVec.z -= rightZ; }
+            moveVec.normalize();
+
+            // 速度分配：跑步 10.0，蹲下 4.5
+            const playerSpeed = isSneaking ? 4.5 : 10.0;
+            let currentPos = camera.position.clone();
+
+            currentPos.x += moveVec.x * playerSpeed * delta;
+            if (!checkCollision(currentPos)) camera.position.x = currentPos.x;
+
+            currentPos = camera.position.clone();
+            currentPos.z += moveVec.z * playerSpeed * delta;
+            if (!checkCollision(currentPos)) camera.position.z = currentPos.z;
+
+            // 聲音判定
+            const isMoving = (moveForward || moveBackward || moveLeft || moveRight);
+            const makesNoise = isMoving && !isSneaking;
+
+            flashlight.intensity = 3.5 + Math.sin(time * 0.05) * 0.3;
+            if (Math.random() < 0.002) flashlight.intensity = 0.1;
+
+            // 4. 鬼的聽音移動機制
+            if (monster) {
+                const monsterPos = monster.position;
+                const playerPos = camera.position;
+
+                // 聽到噪音，刷新追擊點
+                if (makesNoise) {
+                    monsterTargetPos.copy(playerPos);
+                    monsterTargetPos.y = 0; 
+                }
+
+                // 朝目標點走去
+                const distToTarget = monsterPos.distanceTo(monsterTargetPos);
+                if (distToTarget > 0.2) {
+                    const monsterDir = new THREE.Vector3().subVectors(monsterTargetPos, monsterPos);
+                    monsterDir.y = 0;
+                    monsterDir.normalize();
+                    
+                    // 【玩家要求的慢速鬼】：固定慢速 2.2（比玩家蹲下 4.5 還慢一半！）
+                    const ghostSpeed = 2.2; 
+                    monsterPos.add(monsterDir.multiplyScalar(ghostSpeed * delta));
+                    monster.lookAt(monsterTargetPos.x, monsterPos.y, monsterTargetPos.z);
+                }
+
+                // 死亡判定
+                if (monsterPos.distanceTo(playerPos) < 1.6) {
+                    gameState.isGameOver = true;
+                    isGameRunning = false;
+                    document.exitPointerLock();
+                    document.getElementById('game-over-screen').style.display = 'flex';
+                }
+            }
+
+            checkInteractions();
+            updateMinimap(); // 逐幀更新右下角小地圖
+
+            prevTime = time;
+            renderer.render(scene, camera);
+        }
+    </script>
+</body>
+</html>
+
+
